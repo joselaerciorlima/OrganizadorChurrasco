@@ -1,17 +1,73 @@
 ﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
+using System.Data.SqlClient;
+using System.Data;
 
 namespace OrganizadorChurrasco
 {
    public partial class Form1 : Form
    {
+      //=========================== STRING DE CONEXAO ============================================
+      SqlConnection conexao = new SqlConnection(@"Data Source=.\SQLEXPRESS; Initial Catalog=BDCHURRASCO;User ID=sa;Password=sa");
       //=========================== CRIA O FORMULARIO ============================================
       public Form1()
       {
          InitializeComponent();
+         Carregar();
       }
       //=========================== MÉTODOS ======================================================
+      void Carregar()
+      {
+         try
+         {
+            conexao.Open();
+            string query = "SELECT * FROM TBITENS ORDER BY descricao";
+            SqlCommand command = new SqlCommand(query, conexao);
+            SqlDataAdapter da = new SqlDataAdapter(command);
+            DataTable dt = new DataTable();
+            da.Fill(dt);
+
+            dgvItens.DataSource = dt;
+
+            if (dgvItens.SelectedRows.Count > 0)
+            {
+               dgvItens.CurrentRow.Selected = false;
+            }
+
+            if (dt.Rows.Count > 0)
+            {
+               SqlCommand commandTotal = new SqlCommand("SELECT SUM(total) FROM TBITENS", conexao);
+
+               double retorno = Convert.ToDouble(commandTotal.ExecuteScalar());
+               txtTotal.Text = retorno.ToString("C");
+
+               SqlCommand commandPendentes = new SqlCommand("SELECT COUNT(codigo) FROM TBITENS WHERE status = 'Pendente'", conexao);
+               lblPendentes.Text = commandPendentes.ExecuteScalar().ToString();
+            }
+
+            SqlCommand commandInfo = new SqlCommand("SELECT TOP 1 * FROM TBINFO", conexao);
+            SqlDataAdapter daInfo = new SqlDataAdapter(commandInfo);
+            DataTable dtInfo = new DataTable();
+            daInfo.Fill(dtInfo);
+
+            foreach (DataRow item in dtInfo.Rows)
+            {
+               mtcData.SelectionStart = Convert.ToDateTime(item["data"]);
+               dtpHora.Value = Convert.ToDateTime(item["hora"]);
+            }
+
+         }
+         catch (Exception erro)
+         {
+            MessageBox.Show("Não foi possível selecionar os dados. Detalhes: " + erro.Message);
+         }
+         finally
+         {
+            conexao.Close();
+         }
+      }
+      //------------------------------------------------------------------------------------------
       void LimparCampos()
       {
          txtDescricao.Clear();
@@ -50,6 +106,12 @@ namespace OrganizadorChurrasco
                dgvItens.CurrentRow.Cells["status"].Style.ForeColor = Color.Red;
             }
             LimparCampos();
+
+            SqlCommand command = new SqlCommand("UPDATE TBITENS SET status = '" + status + "' WHERE codigo = " + dgvItens.CurrentRow.Cells["codigo"].Value.ToString(), conexao);
+
+            conexao.Open();
+            command.ExecuteNonQuery();
+            conexao.Close();
          }
       }
       //------------------------------------------------------------------------------------------
@@ -80,9 +142,6 @@ namespace OrganizadorChurrasco
             produto.Preco = Convert.ToDouble(txtPreco.Text);
             produto.Status = "Pendente";
 
-            //Adiciona o item no datagridview.
-            dgvItens.Rows.Add(produto.Descricao, produto.UnidadeMedida, produto.Quantidade, produto.Preco.ToString("C"), (produto.Quantidade * produto.Preco).ToString("C"), produto.Status);
-
             //Atualiza o valor total.                
             txtTotal.Text = (Convert.ToDouble(txtTotal.Text.Substring(3)) + (produto.Quantidade * produto.Preco)).ToString("C");
 
@@ -92,6 +151,40 @@ namespace OrganizadorChurrasco
             dgvItens.CurrentRow.Cells["status"].Style.ForeColor = Color.Red;
 
             LimparCampos();
+
+            //Enviar para o banco de dados o item cadastrado.
+            string query = "INSERT INTO TBITENS (descricao, unidadeMedida, quantidade, preco, total, status) VALUES (@descricao, @unidademedida,@quantidade,@preco,@total,@status); SELECT @@IDENTITY";
+
+            SqlCommand command = new SqlCommand(query, conexao);
+            command.Parameters.AddWithValue("@descricao", produto.Descricao);
+            command.Parameters.AddWithValue("@unidademedida", produto.UnidadeMedida);
+            command.Parameters.AddWithValue("@quantidade", produto.Quantidade);
+            command.Parameters.AddWithValue("@preco", produto.Preco);
+            command.Parameters.AddWithValue("@total", produto.Preco * produto.Quantidade);
+            command.Parameters.AddWithValue("@status", produto.Status);
+            command.CommandType = CommandType.Text;
+
+            try
+            {
+               conexao.Open();
+               int codigo = Convert.ToInt32(command.ExecuteScalar());
+               if (codigo > 0)
+               {
+                  conexao.Close();
+                  Carregar();
+
+
+                  MessageBox.Show("Item Cadastrado!");
+               }
+            }
+            catch (Exception erro)
+            {
+               MessageBox.Show("Não foi possível cadastrar o item. Detalhes: " + erro.Message); ;
+            }
+            finally
+            {
+               conexao.Close();
+            }
          }
       }
       //------------------------------------------------------------------------------------------
@@ -112,6 +205,29 @@ namespace OrganizadorChurrasco
                dgvItens.Rows.Remove(dgvItens.CurrentRow);
 
                LimparCampos();
+
+               //Remover no banco de dados.
+               try
+               {
+                  conexao.Open();
+                  string query = "DELETE FROM TBITENS WHERE codigo = " + dgvItens.CurrentRow.Cells["codigo"].Value.ToString();
+                  SqlCommand command = new SqlCommand(query, conexao);
+
+                  conexao.Open();
+
+                  if (command.ExecuteNonQuery() > 0)
+                  {
+                     MessageBox.Show("Item Removido!");
+                  }
+               }
+               catch (Exception erro)
+               {
+                  MessageBox.Show(erro.Message);
+               }
+               finally
+               {
+                  conexao.Close();
+               }
             }
          }
       }
@@ -135,6 +251,30 @@ namespace OrganizadorChurrasco
          }
          else
             lblDiasFaltam.Text = "Faltam " + Convert.ToInt32((mtcData.SelectionStart - DateTime.Today).TotalDays).ToString() + " dias";
+
+         try
+         {
+            if (conexao.State == ConnectionState.Closed)
+               conexao.Open();
+
+            string query = "IF(NOT EXISTS(SELECT * FROM TBINFO WHERE data = '" + mtcData.SelectionStart + "')) BEGIN DELETE TBINFO WHERE data <> '" + mtcData.SelectionStart + "'; INSERT INTO TBINFO (data, hora) VALUES (@data, @hora) END";
+
+            SqlCommand command = new SqlCommand(query, conexao);
+            command.Parameters.AddWithValue("@data", mtcData.SelectionStart);
+            command.Parameters.AddWithValue("@hora", dtpHora.Value.ToShortTimeString());
+
+            command.CommandType = CommandType.Text;
+
+            command.ExecuteNonQuery();
+         }
+         catch (Exception erro)
+         {
+            MessageBox.Show("Algo deu errado! Detalhes: " + erro.Message);
+         }
+         finally
+         {
+            conexao.Close();
+         }
       }
       //------------------------------------------------------------------------------------------
       private void dgvItens_DoubleClick(object sender, EventArgs e)
@@ -154,7 +294,7 @@ namespace OrganizadorChurrasco
       {
          if (e.KeyCode == Keys.F11)
          {
-           Adicionar();
+            Adicionar();
          }
       }
    }
